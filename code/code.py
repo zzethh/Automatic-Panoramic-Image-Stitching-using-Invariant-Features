@@ -16,7 +16,7 @@ stats = {
 
 
 def load_images_robust():
-    # I'm just checking for both jpg and jpeg extensions so the script doesn't crash if I name them differently.
+    # Check for both .jpg and .jpeg extensions to handle file naming variations.
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -49,11 +49,11 @@ def load_images_robust():
 
 
 def detect_and_match(img1, img2, tag=""):
-    # I'm using SIFT (Scale-Invariant Feature Transform) here.
-    # It's good because it finds keypoints that don't change even if we zoom in or rotate the camera.
+    # Initialize SIFT (Scale-Invariant Feature Transform).
+    # SIFT provides keypoints invariant to scale and rotation, ensuring robust matching.
     sift = cv2.SIFT_create()
 
-    # detectAndCompute finds the keypoints and describing vectors
+    # Detect keypoints and compute descriptors
     kp1, des1 = sift.detectAndCompute(img1, None)
     kp2, des2 = sift.detectAndCompute(img2, None)
 
@@ -64,15 +64,15 @@ def detect_and_match(img1, img2, tag=""):
         stats["kp_C"] = len(kp2)
     elif tag == "RC":
         stats["kp_R"] = len(kp1)
-        # Center keypoints already counted if LC ran first, but safe to overwrite or ignore
+        # Center keypoints were already counted in the LC step.
 
-    # Using FLANN matcher because it's faster than BFMatcher (Brute Force) for large datasets.
+    # Use FLANN matcher for efficiency on larger datasets compared to BFMatcher.
     FLANN_INDEX_KDTREE = 1
     index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
     search_params = dict(checks=50)
     flann = cv2.FlannBasedMatcher(index_params, search_params)
 
-    # Getting the top 2 matches for each point so I can run Lowe's Ratio Test
+    # Retrieve top 2 matches for each point to apply Lowe's Ratio Test.
     if des1 is None or des2 is None:
         print("Warning: No descriptors found.")
         return kp1, kp2, []
@@ -80,8 +80,8 @@ def detect_and_match(img1, img2, tag=""):
     matches = flann.knnMatch(des1, des2, k=2)
 
     # Lowe's Ratio Test:
-    # If the first match is noticeably better (distance < 0.7) than the second match, I keep it.
-    # This filters out ambiguous matches (like repeated patterns in windows/bricks).
+    # Retain matches where the first match is significantly better (distance < 0.7) than the second.
+    # This filters out ambiguous matches, such as repetitive patterns.
     good = []
     for m, n in matches:
         if m.distance < 0.7 * n.distance:
@@ -96,8 +96,8 @@ def detect_and_match(img1, img2, tag=""):
 
 
 def compute_homography_dlt(src_pts, dst_pts):
-    # This acts as my manual implementation of finding the Homography matrix.
-    # I'm using the Direct Linear Transform (DLT) method to solve for H.
+    # Manual implementation of Homography matrix estimation.
+    # Uses the Direct Linear Transform (DLT) method to solve for H.
     num_points = src_pts.shape[0]
     if num_points < 4:
         return None
@@ -107,18 +107,18 @@ def compute_homography_dlt(src_pts, dst_pts):
         x, y = src_pts[i][0], src_pts[i][1]
         u, v = dst_pts[i][0], dst_pts[i][1]
 
-        # Each point correspondence gives me two rows in matrix A for the equation Ah = 0
+        # Each point correspondence contributes two rows to matrix A for the system Ah = 0.
         A.append([-x, -y, -1, 0, 0, 0, u * x, u * y, u])
         A.append([0, 0, 0, -x, -y, -1, v * x, v * y, v])
 
     A = np.array(A)
 
-    # I solve Ah = 0 using Singular Value Decomposition (SVD).
-    # The solution h is the last column of V corresponding to the smallest singular value.
+    # Solve Ah = 0 using Singular Value Decomposition (SVD).
+    # The solution h corresponds to the last column of V, associated with the smallest singular value.
     U, S, Vt = np.linalg.svd(A)
     H = Vt[-1].reshape(3, 3)
 
-    # I normalize H so that the last element is 1, which is standard convention.
+    # Normalize H such that the last element is 1, following standard convention.
     if abs(H[2, 2]) > 1e-10:
         H = H / H[2, 2]
 
@@ -126,8 +126,8 @@ def compute_homography_dlt(src_pts, dst_pts):
 
 
 def ransac_homography(src_pts, dst_pts, thresh=5.0, max_iters=2000):
-    # Here is my manual implementation of RANSAC (Random Sample Consensus).
-    # It helps me find the best Homography matrix even when there are outliers (bad matches).
+    # Manual implementation of RANSAC (Random Sample Consensus).
+    # Robustly estimates the best Homography matrix in the presence of outliers.
     num_points = src_pts.shape[0]
     if num_points < 4:
         return None, None
@@ -136,43 +136,43 @@ def ransac_homography(src_pts, dst_pts, thresh=5.0, max_iters=2000):
     best_inliers_count = 0
     best_mask = np.zeros((num_points, 1), dtype=np.uint8)
 
-    # I need to add 1 to the points to make them homogeneous coordinates (x, y, 1)
+    # Convert points to homogeneous coordinates (x, y, 1).
     src_pts_h = np.hstack((src_pts, np.ones((num_points, 1))))
 
     for _ in range(max_iters):
-        # 1. I randomly select 4 points to estimate a model
+        # Randomly select 4 points to estimate a model
         idx = np.random.choice(num_points, 4, replace=False)
         src_sample = src_pts[idx]
         dst_sample = dst_pts[idx]
 
-        # 2. I compute the homography for just these 4 points
+        # Compute the homography for these 4 points
         H_sample = compute_homography_dlt(src_sample, dst_sample)
         if H_sample is None:
             continue
 
-        # 3. I project all points using this estimated H
+        # Project all points using this estimated H
         dst_proj = (H_sample @ src_pts_h.T).T
 
-        # I normalize by dividing by the last component w (perspective division)
+        # Normalize by dividing by the last component w (perspective division)
         with np.errstate(divide="ignore", invalid="ignore"):
             w = dst_proj[:, 2:3]
             w[np.abs(w) < 1e-10] = 1e-10  # Avoiding division by zero
             dst_proj_norm = dst_proj[:, :2] / w
 
-        # 4. I calculate the distance between projected points and actual destination points
+        # Calculate the distance between projected points and actual destination points
         distances = np.linalg.norm(dst_pts - dst_proj_norm, axis=1)
 
-        # 5. I count how many points fit this model well (inliers)
+        # Count inliers (points that fit the model well)
         inliers_idx = distances < thresh
         num_inliers = np.sum(inliers_idx)
 
-        # If this model is better than my previous best, I keep it.
+        # Update best model if current model has more inliers
         if num_inliers > best_inliers_count:
             best_inliers_count = num_inliers
             best_H = H_sample
             best_mask = inliers_idx.astype(np.uint8).reshape(-1, 1)
 
-    # Optional: I can recompute H using all the inliers to get a slightly more accurate result.
+    # Recompute H using all inliers for improved accuracy.
     if best_H is not None and best_inliers_count >= 4:
         inlier_src = src_pts[best_mask.flatten() == 1]
         inlier_dst = dst_pts[best_mask.flatten() == 1]
@@ -184,10 +184,10 @@ def ransac_homography(src_pts, dst_pts, thresh=5.0, max_iters=2000):
 
 
 def compute_homography(img_src, img_dst, tag=""):
-    # This wrapper aligns the source image to the destination image.
+    # Wrapper function to align the source image to the destination image.
     kp_src, kp_dst, matches = detect_and_match(img_src, img_dst, tag)
 
-    # I need at least 4 matches to solving for the 8 degrees of freedom in Homography.
+    # At least 4 matches are required to solve for the 8 degrees of freedom in Homography.
     if len(matches) < 4:
         print("Not enough matches found!")
         return None, None, None, None
@@ -196,10 +196,10 @@ def compute_homography(img_src, img_dst, tag=""):
     src_pts = np.float32([kp_src[m.queryIdx].pt for m in matches])
     dst_pts = np.float32([kp_dst[m.trainIdx].pt for m in matches])
 
-    # Using my manual RANSAC implementation to robustly find H
+    # Use manual RANSAC implementation to robustly find H.
     H, mask = ransac_homography(src_pts, dst_pts, thresh=5.0)
 
-    # Counting inliers for my report
+    # Count inliers for reporting.
     inliers = np.sum(mask)
     if tag == "LC":
         stats["inliers_LC"] = int(inliers)
@@ -210,12 +210,12 @@ def compute_homography(img_src, img_dst, tag=""):
 
 
 def stitch_images_centered(img_L, img_C, img_R):
-    # Instead of stitching L->C and then (L+C)->R, I'm anchoring everything to the Center image.
-    # This prevents the Left image from getting warped twice and looking super distorted.
+    # Anchor all images to the Center frame instead of sequential stitching.
+    # This minimizes distortion by preventing double warping of the Left image.
     print("Computing Alignment: Left -> Center...")
     H_L_to_C, kpL, kpC, matchLC = compute_homography(img_L, img_C, tag="LC")
 
-    # I'll save a visualization of the matches for the report.
+    # Save visualization of matches for the report.
     if kpL is not None:
         vis_match = cv2.drawMatches(
             img_L,
@@ -238,8 +238,8 @@ def stitch_images_centered(img_L, img_C, img_R):
         print("Could not compute homographies. Aborting.")
         return img_C
 
-    # I need to figure out how big the new canvas should be.
-    # I'll do this by transforming the corners of L and R into C's coordinate system.
+    # Determine the size of the new canvas.
+    # Transform the corners of L and R into C's coordinate system.
     h_c, w_c = img_C.shape[:2]
     h_l, w_l = img_L.shape[:2]
     h_r, w_r = img_R.shape[:2]
@@ -251,13 +251,13 @@ def stitch_images_centered(img_L, img_C, img_R):
     corners_L_trans = cv2.perspectiveTransform(corners_L, H_L_to_C)
     corners_R_trans = cv2.perspectiveTransform(corners_R, H_R_to_C)
 
-    # I'll find the min/max coordinates to know the size of the final panorama
+    # Calculate min/max coordinates to determine the final panorama size.
     all_points = np.concatenate((corners_C, corners_L_trans, corners_R_trans), axis=0)
 
     [xmin, ymin] = np.int32(all_points.min(axis=0).ravel() - 0.5)
     [xmax, ymax] = np.int32(all_points.max(axis=0).ravel() + 0.5)
 
-    # I need a translation matrix to shift everything into positive coordinates if xmin/ymin < 0
+    # Create a translation matrix to shift everything into positive coordinates.
     translation_dist = [-xmin, -ymin]
     H_translation = np.array(
         [[1, 0, translation_dist[0]], [0, 1, translation_dist[1]], [0, 0, 1]],
@@ -279,14 +279,13 @@ def stitch_images_centered(img_L, img_C, img_R):
     print("Placing Center image...")
     warped_C = cv2.warpPerspective(img_C, H_translation, output_shape)
 
-    # 1. I create masks for where we actually have image data (pixels > 0)
-    #    I checking all channels to avoid missing dark pixels.
+    # Create masks for regions with image data (pixels > 0), checking all channels.
     mask_L = (warped_L.sum(axis=2) > 0).astype(np.float32)
     mask_C = (warped_C.sum(axis=2) > 0).astype(np.float32)
     mask_R = (warped_R.sum(axis=2) > 0).astype(np.float32)
 
-    # 2. Exposure Compensation (Simple Gain Adjustment)
-    #    Sometimes one image is brighter than the other. I'll match L and R to C's brightness.
+    # Exposure Compensation (Gain Adjustment).
+    # Maintain brightness consistency by matching L and R to C.
     print("Applying Exposure Compensation...")
 
     # Overlap between Left and Center
@@ -307,8 +306,8 @@ def stitch_images_centered(img_L, img_C, img_R):
         print(f"  -> Compensating R->C: Gain = {gain_R:.2f}")
         warped_R = np.clip(warped_R * gain_R, 0, 255).astype(np.uint8)
 
-    # 3. Linear Blending using Distance Transform (Feathering)
-    #    I'm weighting pixels based on how far they are from the edge.
+    # Linear Blending using Distance Transform (Feathering).
+    # Pixels are weighted based on their distance from the edge.
     print("Blending images using Distance Transform...")
     dist_L = cv2.distanceTransform(mask_L.astype(np.uint8), cv2.DIST_L2, 5)
     dist_C = cv2.distanceTransform(mask_C.astype(np.uint8), cv2.DIST_L2, 5)
@@ -331,8 +330,8 @@ def stitch_images_centered(img_L, img_C, img_R):
 
 
 def crop_black_borders(img):
-    # This just gets rid of the extra black space around the panorama.
-    # It finds the largest object (the pano) and crops to its bounding box.
+    # Remove extra black space around the panorama.
+    # Find the largest object (the panorama) and crop to its bounding box.
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
